@@ -12,6 +12,9 @@ import torchvision.transforms as transforms
 import torchvision.utils as vutils
 from torch.autograd import Variable
 import os
+from visdom import Visdom
+import numpy as np
+import gc
 
 import models.dcgan as dcgan
 import models.mlp as mlp
@@ -27,8 +30,8 @@ parser.add_argument('--nz', type=int, default=100, help='size of the latent z ve
 parser.add_argument('--ngf', type=int, default=64)
 parser.add_argument('--ndf', type=int, default=64)
 parser.add_argument('--niter', type=int, default=25, help='number of epochs to train for')
-parser.add_argument('--lrD', type=float, default=0.00005, help='learning rate for Critic, default=0.00005')
-parser.add_argument('--lrG', type=float, default=0.00005, help='learning rate for Generator, default=0.00005')
+parser.add_argument('--lrD', type=float, default=0.0005, help='learning rate for Critic, default=0.00005')
+parser.add_argument('--lrG', type=float, default=0.0005, help='learning rate for Generator, default=0.00005')
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
 parser.add_argument('--cuda'  , action='store_true', help='enables cuda')
 parser.add_argument('--ngpu'  , type=int, default=1, help='number of GPUs to use')
@@ -43,6 +46,8 @@ parser.add_argument('--mlp_D', action='store_true', help='use MLP for D')
 parser.add_argument('--n_extra_layers', type=int, default=0, help='Number of extra layers on gen and disc')
 parser.add_argument('--experiment', default=None, help='Where to store samples and models')
 parser.add_argument('--adam', action='store_true', help='Whether to use adam (default is rmsprop)')
+parser.add_argument('--var_constraint', action='store_true', help='Whether to use variance constraint instead of 1-lipschitz')
+parser.add_argument('--l_var', type=float, default=10, help='Weight for the variance constraint')
 opt = parser.parse_args()
 print(opt)
 
@@ -70,7 +75,7 @@ if opt.dataset in ['imagenet', 'folder', 'lfw']:
                                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                                ]))
 elif opt.dataset == 'lsun':
-    dataset = dset.LSUN(db_path=opt.dataroot, classes=['bedroom_train'],
+    dataset = dset.LSUN(root=opt.dataroot, classes=['bedroom_train'],
                         transform=transforms.Compose([
                             transforms.Scale(opt.imageSize),
                             transforms.CenterCrop(opt.imageSize),
@@ -88,6 +93,13 @@ elif opt.dataset == 'cifar10':
 assert dataset
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
                                          shuffle=True, num_workers=int(opt.workers))
+
+viz = Visdom(port=8098)
+errD_plot = viz.line(X=np.array([0]), Y=np.array([np.nan]), win=1,
+                     opts={'xlabel': 'Generator Iterations', 'ylabel': 'D'})
+var_plot = viz.line(X=np.zeros((1,2)), Y=np.array([[np.nan, np.nan]]), win=3,
+                     opts={'xlabel': 'Iterations', 'ylabel': 'Variance',
+                           'legend': ['Real', 'Fake']})
 
 ngpu = int(opt.ngpu)
 nz = int(opt.nz)
@@ -148,6 +160,12 @@ else:
     optimizerD = optim.RMSprop(netD.parameters(), lr = opt.lrD)
     optimizerG = optim.RMSprop(netG.parameters(), lr = opt.lrG)
 
+
+var_real = 1
+var_fake = 1
+m_var = 0.5
+
+
 gen_iterations = 0
 for epoch in range(opt.niter):
     data_iter = iter(dataloader)
@@ -160,7 +178,8 @@ for epoch in range(opt.niter):
             p.requires_grad = True # they are set to False below in netG update
 
         # train the discriminator Diters times
-        if gen_iterations < 25 or gen_iterations % 500 == 0:
+        # if gen_iterations < 25 or gen_iterations % 500 == 0:
+        if gen_iterations % 500 == 0:
             Diters = 100
         else:
             Diters = opt.Diters
@@ -168,9 +187,17 @@ for epoch in range(opt.niter):
         while j < Diters and i < len(dataloader):
             j += 1
 
-            # clamp parameters to a cube
-            for p in netD.parameters():
-                p.data.clamp_(opt.clamp_lower, opt.clamp_upper)
+            if i % 10 == 0:
+                del var_real
+                del var_fake
+                var_real = 1
+                var_fake = 1
+                gc.collect()
+
+            # enforce constraint
+            if not opt.var_constraint:
+                for p in netD.parameters():
+                    p.data.clamp_(opt.clamp_lower, opt.clamp_upper)
 
             data = data_iter.next()
             i += 1
@@ -185,18 +212,41 @@ for epoch in range(opt.niter):
             input.resize_as_(real_cpu).copy_(real_cpu)
             inputv = Variable(input)
 
-            errD_real = netD(inputv)
-            errD_real.backward(one)
+            out_D = netD(inputv)
+            errD_real = out_D.mean(0).view(1)
+
+            if opt.var_constraint:
+                var_real = m_var*out_D.var(0) + (1-m_var)*var_real
+                var_constraint = torch.log(var_real)**2
+                var_constraint *= opt.l_var
+                errD_real += var_constraint
+
+            errD_real.backward(retain_graph=True)
 
             # train with fake
             noise.resize_(opt.batchSize, nz, 1, 1).normal_(0, 1)
-            noisev = Variable(noise, volatile = True) # totally freeze netG
-            fake = Variable(netG(noisev).data)
+            with torch.no_grad():
+                noisev = Variable(noise) # totally freeze netG
+                fake = netG(noisev).data
             inputv = fake
-            errD_fake = netD(inputv)
-            errD_fake.backward(mone)
+            out_D = netD(inputv)
+            errD_fake = -out_D.mean(0).view(1)
+
+            if opt.var_constraint:
+                var_fake = m_var * out_D.var(0) + (1-m_var)*var_fake
+                var_constraint = torch.log(var_fake)**2
+                var_constraint *= opt.l_var
+                errD_fake += var_constraint
+
+            errD_fake.backward(retain_graph=True)
             errD = errD_real - errD_fake
+
             optimizerD.step()
+
+            if opt.var_constraint:
+                viz.line(X=np.array([[epoch*len(dataloader) + i]*2]),
+                         Y=np.array([[var_real.item(), var_fake.item()]]),
+                         win=var_plot, update='append')
 
         ############################
         # (2) Update G network
@@ -209,7 +259,7 @@ for epoch in range(opt.niter):
         noise.resize_(opt.batchSize, nz, 1, 1).normal_(0, 1)
         noisev = Variable(noise)
         fake = netG(noisev)
-        errG = netD(fake)
+        errG = netD(fake).mean(0).view(1)
         errG.backward(one)
         optimizerG.step()
         gen_iterations += 1
@@ -217,12 +267,17 @@ for epoch in range(opt.niter):
         print('[%d/%d][%d/%d][%d] Loss_D: %f Loss_G: %f Loss_D_real: %f Loss_D_fake %f'
             % (epoch, opt.niter, i, len(dataloader), gen_iterations,
             errD.data[0], errG.data[0], errD_real.data[0], errD_fake.data[0]))
+        viz.line(X=np.array([gen_iterations]), Y=np.array([-errD.item()]),
+                 win=errD_plot, update='append')
         if gen_iterations % 500 == 0:
             real_cpu = real_cpu.mul(0.5).add(0.5)
             vutils.save_image(real_cpu, '{0}/real_samples.png'.format(opt.experiment))
-            fake = netG(Variable(fixed_noise, volatile=True))
+            with torch.no_grad():
+                fake = netG(Variable(fixed_noise))
             fake.data = fake.data.mul(0.5).add(0.5)
             vutils.save_image(fake.data, '{0}/fake_samples_{1}.png'.format(opt.experiment, gen_iterations))
+            viz.images(fake.data.mul(255).clamp(0, 255).byte().cpu().numpy(),
+                       nrow=8, win=2, opts={'title': 'Generated Samples'})
 
     # do checkpointing
     torch.save(netG.state_dict(), '{0}/netG_epoch_{1}.pth'.format(opt.experiment, epoch))
