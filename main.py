@@ -15,6 +15,7 @@ import os
 from visdom import Visdom
 import numpy as np
 import gc
+from collections import deque
 
 import models.dcgan as dcgan
 import models.mlp as mlp
@@ -161,9 +162,10 @@ else:
     optimizerG = optim.RMSprop(netG.parameters(), lr = opt.lrG)
 
 
-var_real = 1
-var_fake = 1
-m_var = 0.5
+var_real = deque([torch.ones(1).squeeze().cuda()]*10)
+var_fake = deque([torch.ones(1).squeeze().cuda()]*10)
+var_weight = 0.5
+w = torch.tensor([var_weight * (1 - var_weight)**i for i in range(9, -1, -1)]).cuda()
 
 
 gen_iterations = 0
@@ -187,11 +189,9 @@ for epoch in range(opt.niter):
         while j < Diters and i < len(dataloader):
             j += 1
 
-            if i % 10 == 0:
-                del var_real
-                del var_fake
-                var_real = 1
-                var_fake = 1
+            if opt.var_constraint:
+                var_real.popleft()
+                var_fake.popleft()
                 gc.collect()
 
             # enforce constraint
@@ -216,8 +216,9 @@ for epoch in range(opt.niter):
             errD_real = out_D.mean(0).view(1)
 
             if opt.var_constraint:
-                var_real = m_var*out_D.var(0) + (1-m_var)*var_real
-                var_constraint = torch.log(var_real)**2
+                var_real.append(out_D.var(0))
+                vm_real = torch.sum(w * torch.stack(tuple(var_real)))
+                var_constraint = torch.log(vm_real)**2
                 var_constraint *= opt.l_var
                 errD_real += var_constraint
 
@@ -233,8 +234,9 @@ for epoch in range(opt.niter):
             errD_fake = -out_D.mean(0).view(1)
 
             if opt.var_constraint:
-                var_fake = m_var * out_D.var(0) + (1-m_var)*var_fake
-                var_constraint = torch.log(var_fake)**2
+                var_fake.append(out_D.var(0))
+                vm_fake = torch.sum(w * torch.stack(tuple(var_fake)))
+                var_constraint = torch.log(vm_fake)**2
                 var_constraint *= opt.l_var
                 errD_fake += var_constraint
 
@@ -245,7 +247,7 @@ for epoch in range(opt.niter):
 
             if opt.var_constraint:
                 viz.line(X=np.array([[epoch*len(dataloader) + i]*2]),
-                         Y=np.array([[var_real.item(), var_fake.item()]]),
+                         Y=np.array([[vm_real.item(), vm_fake.item()]]),
                          win=var_plot, update='append')
 
         ############################
