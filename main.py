@@ -90,7 +90,8 @@ elif opt.dataset == 'cifar10':
                                transforms.ToTensor(),
                                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                            ])
-    )
+                           )
+
 assert dataset
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
                                          shuffle=True, num_workers=int(opt.workers))
@@ -159,20 +160,22 @@ if opt.adam:
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lrG, betas=(opt.beta1, 0.999))
 else:
     optimizerD = optim.RMSprop(netD.parameters(), lr = opt.lrD)
+                               # weight_decay=1e-3)
     optimizerG = optim.RMSprop(netG.parameters(), lr = opt.lrG)
+                               # weight_decay=1e-3)
 
-
-var_real = deque([torch.ones(1).squeeze().cuda()]*10)
-var_fake = deque([torch.ones(1).squeeze().cuda()]*10)
 var_weight = 0.5
 w = torch.tensor([var_weight * (1 - var_weight)**i for i in range(9, -1, -1)]).cuda()
 
-
 gen_iterations = 0
 for epoch in range(opt.niter):
+    var_real = deque([torch.ones(1).squeeze().cuda()]*10)
+    var_fake = deque([torch.ones(1).squeeze().cuda()]*10)
     data_iter = iter(dataloader)
     i = 0
     while i < len(dataloader):
+        l_var = opt.l_var + (gen_iterations + 1)/3000
+        # l_var = opt.l_var
         ############################
         # (1) Update D network
         ###########################
@@ -185,6 +188,10 @@ for epoch in range(opt.niter):
             Diters = 100
         else:
             Diters = opt.Diters
+
+        # if (gen_iterations + 1) % 3000 == 0:
+        #     opt.l_var *= 2
+
         j = 0
         while j < Diters and i < len(dataloader):
             j += 1
@@ -204,6 +211,10 @@ for epoch in range(opt.niter):
 
             # train with real
             real_cpu, _ = data
+
+            # Small residual batch at tail of dataloader breaks variance memory
+            if real_cpu.shape[0] < opt.batchSize:
+                break
             netD.zero_grad()
             batch_size = real_cpu.size(0)
 
@@ -219,8 +230,8 @@ for epoch in range(opt.niter):
                 var_real.append(out_D.var(0))
                 vm_real = torch.sum(w * torch.stack(tuple(var_real)))
                 var_constraint = torch.log(vm_real)**2
-                var_constraint *= opt.l_var
-                errD_real += var_constraint
+                var_constraint *= l_var
+                var_constraint.backward(retain_graph=True)
 
             errD_real.backward(retain_graph=True)
 
@@ -237,8 +248,8 @@ for epoch in range(opt.niter):
                 var_fake.append(out_D.var(0))
                 vm_fake = torch.sum(w * torch.stack(tuple(var_fake)))
                 var_constraint = torch.log(vm_fake)**2
-                var_constraint *= opt.l_var
-                errD_fake += var_constraint
+                var_constraint *= l_var
+                var_constraint.backward(retain_graph=True)
 
             errD_fake.backward(retain_graph=True)
             errD = errD_real - errD_fake
@@ -277,7 +288,7 @@ for epoch in range(opt.niter):
             with torch.no_grad():
                 fake = netG(Variable(fixed_noise))
             fake.data = fake.data.mul(0.5).add(0.5)
-            vutils.save_image(fake.data, '{0}/fake_samples_{1}.png'.format(opt.experiment, gen_iterations))
+            vutils.save_image(fake.data, '{0}/fake_samples_{1:010d}.png'.format(opt.experiment, gen_iterations))
             viz.images(fake.data.mul(255).clamp(0, 255).byte().cpu().numpy(),
                        nrow=8, win=2, opts={'title': 'Generated Samples'})
 
