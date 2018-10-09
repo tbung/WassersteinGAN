@@ -160,9 +160,9 @@ if opt.adam:
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lrG, betas=(opt.beta1, 0.999))
 else:
     optimizerD = optim.RMSprop(netD.parameters(), lr = opt.lrD)
-                               # weight_decay=1e-3)
+                               # weight_decay=1e-1)
     optimizerG = optim.RMSprop(netG.parameters(), lr = opt.lrG)
-                               # weight_decay=1e-3)
+                               # weight_decay=1e-1)
 
 var_weight = 0.5
 w = torch.tensor([var_weight * (1 - var_weight)**i for i in range(9, -1, -1)]).cuda()
@@ -174,8 +174,8 @@ for epoch in range(opt.niter):
     data_iter = iter(dataloader)
     i = 0
     while i < len(dataloader):
-        l_var = opt.l_var + (gen_iterations + 1)/3000
-        # l_var = opt.l_var
+        # l_var = opt.l_var + (gen_iterations + 1)/3000
+        l_var = opt.l_var
         ############################
         # (1) Update D network
         ###########################
@@ -183,8 +183,8 @@ for epoch in range(opt.niter):
             p.requires_grad = True # they are set to False below in netG update
 
         # train the discriminator Diters times
-        if gen_iterations < 25 or gen_iterations % 500 == 0:
-            # if gen_iterations % 500 == 0:
+        # if gen_iterations < 25 or gen_iterations % 500 == 0:
+        if gen_iterations % 500 == 0:
             Diters = 100
         else:
             Diters = opt.Diters
