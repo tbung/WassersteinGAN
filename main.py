@@ -12,10 +12,9 @@ import torchvision.transforms as transforms
 import torchvision.utils as vutils
 from torch.autograd import Variable
 import os
-from visdom import Visdom
-import numpy as np
-import gc
+import json
 from collections import deque
+from tensorboardX import SummaryWriter
 
 import models.dcgan as dcgan
 import models.mlp as mlp
@@ -48,9 +47,16 @@ parser.add_argument('--n_extra_layers', type=int, default=0, help='Number of ext
 parser.add_argument('--experiment', default=None, help='Where to store samples and models')
 parser.add_argument('--adam', action='store_true', help='Whether to use adam (default is rmsprop)')
 parser.add_argument('--var_constraint', action='store_true', help='Whether to use variance constraint instead of 1-lipschitz')
-parser.add_argument('--l_var', type=float, default=10, help='Weight for the variance constraint')
+parser.add_argument('--l_var', type=float, default=1e0, help='Weight for the variance constraint')
 opt = parser.parse_args()
 print(opt)
+
+writer = SummaryWriter()
+# writer.add_custom_scalars_multilinechart(['train/variance/real',
+#                                           'train/variance/fake'])
+
+with open(writer.file_writer.get_logdir() + '/args.json', 'w') as f:
+    json.dump(opt, f)
 
 if opt.experiment is None:
     opt.experiment = 'samples'
@@ -96,12 +102,12 @@ assert dataset
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
                                          shuffle=True, num_workers=int(opt.workers))
 
-viz = Visdom(port=8098)
-errD_plot = viz.line(X=np.array([0]), Y=np.array([np.nan]), win=1,
-                     opts={'xlabel': 'Generator Iterations', 'ylabel': 'D'})
-var_plot = viz.line(X=np.zeros((1,2)), Y=np.array([[np.nan, np.nan]]), win=3,
-                     opts={'xlabel': 'Iterations', 'ylabel': 'Variance',
-                           'legend': ['Real', 'Fake']})
+# viz = Visdom(port=8098)
+# errD_plot = viz.line(X=np.array([0]), Y=np.array([np.nan]), win=1,
+#                      opts={'xlabel': 'Generator Iterations', 'ylabel': 'D'})
+# var_plot = viz.line(X=np.zeros((1,2)), Y=np.array([[np.nan, np.nan]]), win=3,
+#                      opts={'xlabel': 'Iterations', 'ylabel': 'Variance',
+#                            'legend': ['Real', 'Fake']})
 
 ngpu = int(opt.ngpu)
 nz = int(opt.nz)
@@ -160,9 +166,9 @@ if opt.adam:
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lrG, betas=(opt.beta1, 0.999))
 else:
     optimizerD = optim.RMSprop(netD.parameters(), lr = opt.lrD)
-                               # weight_decay=1e-3)
+                               # weight_decay=1e-1)
     optimizerG = optim.RMSprop(netG.parameters(), lr = opt.lrG)
-                               # weight_decay=1e-3)
+                               # weight_decay=1e-1)
 
 var_weight = 0.5
 w = torch.tensor([var_weight * (1 - var_weight)**i for i in range(9, -1, -1)]).cuda()
@@ -174,8 +180,8 @@ for epoch in range(opt.niter):
     data_iter = iter(dataloader)
     i = 0
     while i < len(dataloader):
-        l_var = opt.l_var + (gen_iterations + 1)/3000
-        # l_var = opt.l_var
+        # l_var = opt.l_var + (gen_iterations + 1)/3000
+        l_var = opt.l_var
         ############################
         # (1) Update D network
         ###########################
@@ -183,8 +189,8 @@ for epoch in range(opt.niter):
             p.requires_grad = True # they are set to False below in netG update
 
         # train the discriminator Diters times
-        if gen_iterations < 25 or gen_iterations % 500 == 0:
-            # if gen_iterations % 500 == 0:
+        # if gen_iterations < 25 or gen_iterations % 500 == 0:
+        if gen_iterations % 500 == 0:
             Diters = 100
         else:
             Diters = opt.Diters
@@ -196,10 +202,10 @@ for epoch in range(opt.niter):
         while j < Diters and i < len(dataloader):
             j += 1
 
-            if opt.var_constraint:
-                var_real.popleft()
-                var_fake.popleft()
-                gc.collect()
+            # if opt.var_constraint:
+            #     var_real.popleft()
+            #     var_fake.popleft()
+            #     gc.collect()
 
             # enforce constraint
             if not opt.var_constraint:
@@ -223,17 +229,18 @@ for epoch in range(opt.niter):
             input.resize_as_(real_cpu).copy_(real_cpu)
             inputv = Variable(input)
 
-            out_D = netD(inputv)
-            errD_real = out_D.mean(0).view(1)
+            out_D_real = netD(inputv)
+            errD_real = out_D_real.mean(0).view(1)
 
             if opt.var_constraint:
-                var_real.append(out_D.var(0))
-                vm_real = torch.sum(w * torch.stack(tuple(var_real)))
-                var_constraint = torch.log(vm_real)**2
-                var_constraint *= l_var
-                var_constraint.backward(retain_graph=True)
+                # var_real.append(out_D.var(0))
+                # vm_real = torch.sum(w * torch.stack(tuple(var_real)))
+                vm_real = out_D_real.var(0)
+                # var_constraint = torch.sqrt(vm_real**2 - 1)
+                # var_constraint = l_var * var_constraint
+                # var_constraint.backward(retain_graph=True)
 
-            errD_real.backward(retain_graph=True)
+            # errD_real.backward(retain_graph=True)
 
             # train with fake
             noise.resize_(opt.batchSize, nz, 1, 1).normal_(0, 1)
@@ -241,25 +248,36 @@ for epoch in range(opt.niter):
                 noisev = Variable(noise) # totally freeze netG
                 fake = netG(noisev).data
             inputv = fake
-            out_D = netD(inputv)
-            errD_fake = -out_D.mean(0).view(1)
+            out_D_fake = netD(inputv)
+            errD_fake = out_D_fake.mean(0).view(1)
 
             if opt.var_constraint:
-                var_fake.append(out_D.var(0))
-                vm_fake = torch.sum(w * torch.stack(tuple(var_fake)))
-                var_constraint = torch.log(vm_fake)**2
-                var_constraint *= l_var
-                var_constraint.backward(retain_graph=True)
+                # var_fake.append(out_D.var(0))
+                # vm_fake = torch.sum(w * torch.stack(tuple(var_fake)))
+                vm_fake = out_D_fake.var(0)
+                # var_constraint = torch.sqrt(vm_fake**2 - 1)
+                # var_constraint = l_var * var_constraint
+                # var_constraint.backward(retain_graph=True)
 
-            errD_fake.backward(retain_graph=True)
+            # errD_fake.backward(retain_graph=True)
             errD = errD_real - errD_fake
+
+            loss = -(
+                (errD_real - errD_fake)
+                - l_var*torch.exp(torch.sqrt(torch.log(vm_real)**2 +
+                                             torch.log(vm_fake)**2))
+            )
+            loss.backward()
 
             optimizerD.step()
 
             if opt.var_constraint:
-                viz.line(X=np.array([[epoch*len(dataloader) + i]*2]),
-                         Y=np.array([[vm_real.item(), vm_fake.item()]]),
-                         win=var_plot, update='append')
+                # viz.line(X=np.array([[epoch*len(dataloader) + i]*2]),
+                #          Y=np.array([[vm_real.item(), vm_fake.item()]]),
+                #          win=var_plot, update='append')
+                writer.add_scalars('train/variance', {'real': vm_real.item(),
+                                                      'fake': vm_fake.item()},
+                                   epoch*len(dataloader) + i)
 
         ############################
         # (2) Update G network
@@ -272,16 +290,17 @@ for epoch in range(opt.niter):
         noise.resize_(opt.batchSize, nz, 1, 1).normal_(0, 1)
         noisev = Variable(noise)
         fake = netG(noisev)
-        errG = netD(fake).mean(0).view(1)
-        errG.backward(one)
+        errG = -netD(fake).mean(0).view(1)
+        errG.backward()
         optimizerG.step()
         gen_iterations += 1
 
         print('[%d/%d][%d/%d][%d] Loss_D: %f Loss_G: %f Loss_D_real: %f Loss_D_fake %f'
             % (epoch, opt.niter, i, len(dataloader), gen_iterations,
             errD.data[0], errG.data[0], errD_real.data[0], errD_fake.data[0]))
-        viz.line(X=np.array([gen_iterations]), Y=np.array([-errD.item()]),
-                 win=errD_plot, update='append')
+        # viz.line(X=np.array([gen_iterations]), Y=np.array([-errD.item()]),
+        #          win=errD_plot, update='append')
+        writer.add_scalar('train/critic', -errD.item(), gen_iterations)
         if gen_iterations % 500 == 0:
             real_cpu = real_cpu.mul(0.5).add(0.5)
             vutils.save_image(real_cpu, '{0}/real_samples.png'.format(opt.experiment))
@@ -289,8 +308,13 @@ for epoch in range(opt.niter):
                 fake = netG(Variable(fixed_noise))
             fake.data = fake.data.mul(0.5).add(0.5)
             vutils.save_image(fake.data, '{0}/fake_samples_{1:010d}.png'.format(opt.experiment, gen_iterations))
-            viz.images(fake.data.mul(255).clamp(0, 255).byte().cpu().numpy(),
-                       nrow=8, win=2, opts={'title': 'Generated Samples'})
+            # viz.images(fake.data.mul(255).clamp(0, 255).byte().cpu().numpy(),
+            #            nrow=8, win=2, opts={'title': 'Generated Samples'})
+            writer.add_image(
+                'train/sample',
+                fake.data.mul(255).clamp(0, 255).byte().cpu().numpy(),
+                gen_iterations
+            )
 
     # do checkpointing
     torch.save(netG.state_dict(), '{0}/netG_epoch_{1}.pth'.format(opt.experiment, epoch))
