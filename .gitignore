@@ -2,6 +2,7 @@ data
 runs
 samples*
 _cache*
+*.npz
 
 # Created by https://www.gitignore.io/api/python
 
