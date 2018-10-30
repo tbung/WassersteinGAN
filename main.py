@@ -23,7 +23,7 @@ import models.mlp as mlp
 import models.resnet as resnet
 
 
-def main(opt):
+def main(opt, reporter=None):
     writer = SummaryWriter()
 
     with open(writer.file_writer.get_logdir() + '/args.json', 'w') as f:
@@ -156,8 +156,6 @@ def main(opt):
 
     gen_iterations = 0
     for epoch in range(opt.niter):
-        var_real = deque([torch.ones(1).squeeze().cuda()]*10)
-        var_fake = deque([torch.ones(1).squeeze().cuda()]*10)
         data_iter = iter(dataloader)
         i = 0
         while i < len(dataloader):
@@ -289,11 +287,13 @@ def main(opt):
                     cuda=True, resize=True, splits=10
                 )
                 writer.add_scalar('test/inception_50k', score, gen_iterations)
-                score, _ = fid_score(
+                fid_score, _ = fid_score(
                     samples.numpy().permute(0, 2, 3,
                                             1).mul(128).add(128).clamp(255), 'cifar10'
                 )
-                writer.add_scalar('test/fid_50k', score, gen_iterations)
+                writer.add_scalar('test/fid_50k', fid_score, gen_iterations)
+                if reporter:
+                    reporter(inception=score, fid=fid_score)
 
         # do checkpointing
         torch.save(netG.state_dict(), f'{opt.experiment}/netG_epoch_{epoch}.pth')
@@ -340,24 +340,12 @@ if __name__ == "__main__":
                         help='number of D iters per each G iter')
     parser.add_argument('--noBN', action='store_true',
                         help='use batchnorm or not (only for DCGAN)')
-    parser.add_argument('--mlp_G', action='store_true',
-                        help='use MLP for G')
-    parser.add_argument('--mlp_D', action='store_true',
-                        help='use MLP for D')
-    parser.add_argument('--resnet_G', action='store_true',
-                        help='use ResNet for G')
-    parser.add_argument('--resnet_D', action='store_true',
-                        help='use ResNet for D')
-    parser.add_argument('--n_extra_layers', type=int, default=0,
-                        help='Number of extra layers on gen and disc')
-    parser.add_argument('--experiment', default=None,
-                        help='Where to store samples and models')
+    parser.add_argument('--type', default='dcgan',
+                        help='dcgan | mlp | resnet')
     parser.add_argument('--adam', action='store_true',
                         help='Whether to use adam (default is rmsprop)')
     parser.add_argument('--var_constraint', action='store_true',
                         help='Whether to constrain variance instead of lipschitz')
-    parser.add_argument('--l_var', type=float, default=1e0,
-                        help='Weight for the variance constraint')
     opt = parser.parse_args()
     print(opt)
     main(opt)
