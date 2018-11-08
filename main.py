@@ -27,64 +27,63 @@ def main(opt, reporter=None):
     writer = SummaryWriter()
 
     with open(writer.file_writer.get_logdir() + '/args.json', 'w') as f:
-        json.dump(vars(opt), f)
+        json.dump(opt, f)
 
-    if opt.experiment is None:
-        opt.experiment = 'samples'
-    os.system('mkdir {0}'.format(opt.experiment))
+    if opt['experiment'] is None:
+        opt['experiment'] = 'samples'
+    os.system('mkdir {0}'.format(opt['experiment']))
 
-    opt.manualSeed = random.randint(1, 10000)  # fix seed
-    print("Random Seed: ", opt.manualSeed)
-    random.seed(opt.manualSeed)
-    torch.manual_seed(opt.manualSeed)
+    opt['manualSeed'] = random.randint(1, 10000)  # fix seed
+    print("Random Seed: ", opt['manualSeed'])
+    random.seed(opt['manualSeed'])
+    torch.manual_seed(opt['manualSeed'])
 
     cudnn.benchmark = True
 
-    if torch.cuda.is_available() and not opt.cuda:
+    if torch.cuda.is_available() and not opt['cuda']:
         print("WARNING: You have a CUDA device,"
               "so you should probably run with --cuda")
 
-    if opt.dataset in ['imagenet', 'folder', 'lfw']:
+    if opt['dataset'] in ['imagenet', 'folder', 'lfw']:
         # folder dataset
-        dataset = dset.ImageFolder(root=opt.dataroot,
+        dataset = dset.ImageFolder(root=opt['dataroot'],
                                    transform=transforms.Compose([
-                                       transforms.Scale(opt.imageSize),
-                                       transforms.CenterCrop(opt.imageSize),
+                                       transforms.Scale(opt['imageSize']),
+                                       transforms.CenterCrop(opt['imageSize']),
                                        transforms.ToTensor(),
                                        transforms.Normalize((0.5, 0.5, 0.5),
                                                             (0.5, 0.5, 0.5)),
                                    ]))
-    elif opt.dataset == 'lsun':
-        dataset = dset.LSUN(root=opt.dataroot, classes=['bedroom_train'],
+    elif opt['dataset'] == 'lsun':
+        dataset = dset.LSUN(root=opt['dataroot'], classes=['bedroom_train'],
                             transform=transforms.Compose([
-                                transforms.Scale(opt.imageSize),
-                                transforms.CenterCrop(opt.imageSize),
+                                transforms.Scale(opt['imageSize']),
+                                transforms.CenterCrop(opt['imageSize']),
                                 transforms.ToTensor(),
                                 transforms.Normalize((0.5, 0.5, 0.5),
                                                      (0.5, 0.5, 0.5)),
                             ]))
-    elif opt.dataset == 'cifar10':
-        dataset = dset.CIFAR10(root=opt.dataroot, download=True,
+    elif opt['dataset'] == 'cifar10':
+        dataset = dset.CIFAR10(root=opt['dataroot'], download=True,
                                transform=transforms.Compose([
-                                   transforms.Scale(opt.imageSize),
+                                   transforms.Scale(opt['imageSize']),
                                    transforms.ToTensor(),
                                    transforms.Normalize((0.5, 0.5, 0.5),
                                                         (0.5, 0.5, 0.5)),
                                ]))
 
     assert dataset
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
+    dataloader = torch.utils.data.DataLoader(dataset,
+                                             batch_size=opt['batchSize'],
                                              shuffle=True,
-                                             num_workers=int(opt.workers))
+                                             num_workers=int(opt['workers']))
 
-
-    ngpu = int(opt.ngpu)
-    nz = int(opt.nz)
-    ngf = int(opt.ngf)
-    ndf = int(opt.ndf)
-    nc = int(opt.nc)
-    n_extra_layers = int(opt.n_extra_layers)
-
+    ngpu = int(opt['ngpu'])
+    nz = int(opt['nz'])
+    ngf = int(opt['ngf'])
+    ndf = int(opt['ndf'])
+    nc = int(opt['nc'])
+    n_extra_layers = int(opt['n_extra_layers'])
 
     # custom weights initialization called on netG and netD
     def weights_init(m):
@@ -95,45 +94,43 @@ def main(opt, reporter=None):
             m.weight.data.normal_(1.0, 0.02)
             m.bias.data.fill_(0)
 
-
-    if opt.noBN:
-        netG = dcgan.DCGAN_G_nobn(opt.imageSize, nz, nc, ngf, ngpu, n_extra_layers)
-    elif opt.mlp_G:
-        netG = mlp.MLP_G(opt.imageSize, nz, nc, ngf, ngpu)
-    elif opt.resnet_G:
+    if opt['noBN']:
+        netG = dcgan.DCGAN_G_nobn(opt['imageSize'], nz, nc, ngf, ngpu,
+                                  n_extra_layers)
+    elif opt['type'] == 'mlp':
+        netG = mlp.MLP_G(opt['imageSize'], nz, nc, ngf, ngpu)
+    elif opt['type'] == 'resnet':
         netG = resnet.Generator(nz)
     else:
-        netG = dcgan.DCGAN_G(opt.imageSize, nz, nc, ngf, ngpu, n_extra_layers)
+        netG = dcgan.DCGAN_G(opt['imageSize'], nz, nc, ngf, ngpu,
+                             n_extra_layers)
 
     netG.apply(weights_init)
-    if opt.netG != '':  # load checkpoint if needed
-        netG.load_state_dict(torch.load(opt.netG))
     print(netG)
 
-    if opt.mlp_D:
-        netD = mlp.MLP_D(opt.imageSize, nz, nc, ndf, ngpu)
-    elif opt.resnet_D:
+    if opt['type'] == 'mlp':
+        netD = mlp.MLP_D(opt['imageSize'], nz, nc, ndf, ngpu)
+    elif opt['type'] == 'resnet':
         netD = resnet.Discriminator(nz)
     else:
-        netD = dcgan.DCGAN_D(opt.imageSize, nz, nc, ndf, ngpu, n_extra_layers)
+        netD = dcgan.DCGAN_D(opt['imageSize'], nz, nc, ndf, ngpu, n_extra_layers)
         netD.apply(weights_init)
 
-    if opt.netD != '':
-        netD.load_state_dict(torch.load(opt.netD))
     print(netD)
 
     inc_noise = torch.utils.data.TensorDataset(torch.randn(50000, nz, 1,
                                                            1).cuda())
     inc_noise_dloader = torch.utils.data.DataLoader(inc_noise,
-                                                    batch_size=opt.batchSize)
+                                                    batch_size=opt['batchSize'])
 
-    input = torch.FloatTensor(opt.batchSize, 3, opt.imageSize, opt.imageSize)
-    noise = torch.FloatTensor(opt.batchSize, nz, 1, 1)
-    fixed_noise = torch.FloatTensor(opt.batchSize, nz, 1, 1).normal_(0, 1)
+    input = torch.FloatTensor(opt['batchSize'], 3, opt['imageSize'],
+                              opt['imageSize'])
+    noise = torch.FloatTensor(opt['batchSize'], nz, 1, 1)
+    fixed_noise = torch.FloatTensor(opt['batchSize'], nz, 1, 1).normal_(0, 1)
     one = torch.FloatTensor([1])
     mone = one * -1
 
-    if opt.cuda:
+    if opt['cuda']:
         netD.cuda()
         netG.cuda()
         input = input.cuda()
@@ -141,26 +138,26 @@ def main(opt, reporter=None):
         noise, fixed_noise = noise.cuda(), fixed_noise.cuda()
 
     # setup optimizer
-    if opt.adam:
-        optimizerD = optim.Adam(netD.parameters(), lr=opt.lrD,
-                                betas=(opt.beta1, 0.999))
-        optimizerG = optim.Adam(netG.parameters(), lr=opt.lrG,
-                                betas=(opt.beta1, 0.999))
+    if opt['adam']:
+        optimizerD = optim.Adam(netD.parameters(), lr=opt['lrD'],
+                                betas=(opt['beta1'], opt['beta2']))
+        optimizerG = optim.Adam(netG.parameters(), lr=opt['lrG'],
+                                betas=(opt['beta1'], opt['beta2']))
     else:
-        optimizerD = optim.RMSprop(netD.parameters(), lr=opt.lrD)
-        optimizerG = optim.RMSprop(netG.parameters(), lr=opt.lrG)
+        optimizerD = optim.RMSprop(netD.parameters(), lr=opt['lrD'])
+        optimizerG = optim.RMSprop(netG.parameters(), lr=opt['lrG'])
 
     var_weight = 0.5
     w = torch.tensor([var_weight * (1 - var_weight)**i
                       for i in range(9, -1, -1)]).cuda()
 
     gen_iterations = 0
-    for epoch in range(opt.niter):
+    for epoch in range(opt['niter']):
         data_iter = iter(dataloader)
         i = 0
         while i < len(dataloader):
             # l_var = opt.l_var + (gen_iterations + 1)/3000
-            l_var = opt.l_var
+            l_var = opt['l_var']
             ############################
             # (1) Update D network
             ###########################
@@ -172,16 +169,16 @@ def main(opt, reporter=None):
             if gen_iterations % 500 == 0:
                 Diters = 100
             else:
-                Diters = opt.Diters
+                Diters = opt['Diters']
 
             j = 0
             while j < Diters and i < len(dataloader):
                 j += 1
 
                 # enforce constraint
-                if not opt.var_constraint:
+                if not opt['var_constraint']:
                     for p in netD.parameters():
-                        p.data.clamp_(opt.clamp_lower, opt.clamp_upper)
+                        p.data.clamp_(opt['clamp_lower'], opt['clamp_upper'])
 
                 data = data_iter.next()
                 i += 1
@@ -192,7 +189,7 @@ def main(opt, reporter=None):
                 netD.zero_grad()
                 batch_size = real_cpu.size(0)
 
-                if opt.cuda:
+                if opt['cuda']:
                     real_cpu = real_cpu.cuda()
                 input.resize_as_(real_cpu).copy_(real_cpu)
                 inputv = Variable(input)
@@ -200,11 +197,11 @@ def main(opt, reporter=None):
                 out_D_real = netD(inputv)
                 errD_real = out_D_real.mean(0).view(1)
 
-                if opt.var_constraint:
+                if opt['var_constraint']:
                     vm_real = out_D_real.var(0)
 
                 # train with fake
-                noise.resize_(opt.batchSize, nz, 1, 1).normal_(0, 1)
+                noise.resize_(opt['batchSize'], nz, 1, 1).normal_(0, 1)
                 with torch.no_grad():
                     noisev = Variable(noise)  # totally freeze netG
                     fake = netG(noisev).data
@@ -212,7 +209,7 @@ def main(opt, reporter=None):
                 out_D_fake = netD(inputv)
                 errD_fake = out_D_fake.mean(0).view(1)
 
-                if opt.var_constraint:
+                if opt['var_constraint']:
                     vm_fake = out_D_fake.var(0)
 
                 errD = errD_real - errD_fake
@@ -226,7 +223,7 @@ def main(opt, reporter=None):
 
                 optimizerD.step()
 
-                if opt.var_constraint:
+                if opt['var_constraint']:
                     writer.add_scalars('train/variance', {'real': vm_real.item(),
                                                           'fake': vm_fake.item()},
                                        epoch*len(dataloader) + i)
@@ -239,7 +236,7 @@ def main(opt, reporter=None):
             netG.zero_grad()
             # in case our last batch was the tail batch of the dataloader,
             # make sure we feed a full batch of noise
-            noise.resize_(opt.batchSize, nz, 1, 1).normal_(0, 1)
+            noise.resize_(opt['batchSize'], nz, 1, 1).normal_(0, 1)
             noisev = Variable(noise)
             fake = netG(noisev)
             errG = -netD(fake).mean(0).view(1)
@@ -247,21 +244,24 @@ def main(opt, reporter=None):
             optimizerG.step()
             gen_iterations += 1
 
+            if torch.isnan(errG):
+                raise ValueError("Loss is nan")
+
             ############################
             # Log Data
             ###########################
             print('[%d/%d][%d/%d][%d] Loss_D: %f Loss_G: %f Loss_D_real: %f'
-                  ' Loss_D_fake %f' % (epoch, opt.niter, i, len(dataloader),
+                  ' Loss_D_fake %f' % (epoch, opt['niter'], i, len(dataloader),
                                        gen_iterations, errD.data[0], errG.data[0],
                                        errD_real.data[0], errD_fake.data[0]))
             writer.add_scalar('train/critic', -errD.item(), gen_iterations)
-            if gen_iterations % 500 == 0:
+            if gen_iterations % (500 * 64 / opt['batchSize']) == 0:
                 real_cpu = real_cpu.mul(0.5).add(0.5)
-                vutils.save_image(real_cpu, f'{opt.experiment}/real_samples.png')
+                vutils.save_image(real_cpu, f'{opt["experiment"]}/real_samples.png')
                 with torch.no_grad():
                     fake = netG(Variable(fixed_noise))
                 fake.data = fake.data.mul(0.5).add(0.5)
-                vutils.save_image(fake.data, f'{opt.experiment}/'
+                vutils.save_image(fake.data, f'{opt["experiment"]}/'
                                   f'fake_samples_{gen_iterations:010d}.png')
                 writer.add_image(
                     'train/sample',
@@ -272,7 +272,7 @@ def main(opt, reporter=None):
             ############################
             # (3) Compute Scores
             ############################
-            if gen_iterations % 1000 == 500:
+            if gen_iterations % (500 * 64 / opt['batchSize']) == 0:
                 with torch.no_grad():
                     netG.eval()
                     samples = []
@@ -287,17 +287,20 @@ def main(opt, reporter=None):
                     cuda=True, resize=True, splits=10
                 )
                 writer.add_scalar('test/inception_50k', score, gen_iterations)
-                fid_score, _ = fid_score(
-                    samples.numpy().permute(0, 2, 3,
-                                            1).mul(128).add(128).clamp(255), 'cifar10'
-                )
-                writer.add_scalar('test/fid_50k', fid_score, gen_iterations)
+                # fids = fid_score(
+                #     samples.permute(0, 2, 3,
+                #                     1).mul(128).add(128).clamp(255).numpy(),
+                #     'cifar10'
+                # )
+                # writer.add_scalar('test/fid_50k', fids, gen_iterations)
                 if reporter:
-                    reporter(inception=score, fid=fid_score)
+                    reporter(inception=score, fid=0)
 
         # do checkpointing
-        torch.save(netG.state_dict(), f'{opt.experiment}/netG_epoch_{epoch}.pth')
-        torch.save(netD.state_dict(), f'{opt.experiment}/netD_epoch_{epoch}.pth')
+        torch.save(netG.state_dict(),
+                   f'{opt["experiment"]}/netG_epoch_{epoch}.pth')
+        torch.save(netD.state_dict(),
+                   f'{opt["experiment"]}/netD_epoch_{epoch}.pth')
 
 
 if __name__ == "__main__":
@@ -311,7 +314,8 @@ if __name__ == "__main__":
     parser.add_argument('--batchSize', type=int, default=64,
                         help='input batch size')
     parser.add_argument('--imageSize', type=int, default=64,
-                        help='the height / width of the input image to network')
+                        help='the height / width of the input image to '
+                        'network')
     parser.add_argument('--nc', type=int, default=3,
                         help='input image channels')
     parser.add_argument('--nz', type=int, default=100,
@@ -345,7 +349,8 @@ if __name__ == "__main__":
     parser.add_argument('--adam', action='store_true',
                         help='Whether to use adam (default is rmsprop)')
     parser.add_argument('--var_constraint', action='store_true',
-                        help='Whether to constrain variance instead of lipschitz')
+                        help='Whether to constrain variance instead of '
+                        'lipschitz')
     opt = parser.parse_args()
     print(opt)
-    main(opt)
+    main(vars(opt))

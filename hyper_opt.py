@@ -1,40 +1,16 @@
 import argparse
 
-import numpy as np
-
 import ray
 from ray import tune
 from ray.tune.schedulers import AsyncHyperBandScheduler
+from ray.tune.suggest import HyperOptSearch
+from hyperopt import hp
 
 from main import main
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', required=True,
-                    help='cifar10 | lsun | imagenet | folder | lfw ')
-parser.add_argument('--dataroot', required=True,
-                    help='path to dataset')
-parser.add_argument('--workers', type=int,
-                    help='number of data loading workers', default=2)
-parser.add_argument('--imageSize', type=int, default=64,
-                    help='the height / width of the input image to network')
-parser.add_argument('--niter', type=int, default=25,
-                    help='number of epochs to train for')
-parser.add_argument('--cuda', action='store_true',
-                    help='enables cuda')
-parser.add_argument('--ngpu', type=int, default=1,
-                    help='number of GPUs to use')
-parser.add_argument('--netG', default='',
-                    help="path to netG (to continue training)")
-parser.add_argument('--netD', default='',
-                    help="path to netD (to continue training)")
-parser.add_argument('--clamp_lower', type=float, default=-0.01)
-parser.add_argument('--clamp_upper', type=float, default=0.01)
-parser.add_argument('--Diters', type=int, default=5,
-                    help='number of D iters per each G iter')
-args = parser.parse_args()
-
 args = {
+    "experiment": "hyper_opt",
     "dataset": "cifar10",
     "dataroot": "./data",
     "workers": 4,
@@ -45,52 +21,61 @@ args = {
     "adam": True,
     "n_extra_layers": 0,
     "var_constraint": True,
+    "l_var": 1
 }
 
-config = {
-    "batchSize": 64,
+space = {
+    "batchSize": hp.choice('batchSize', [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]),
     "nc": 3,
     "nz": 100,
     "ngf": 64,
     "ndf": 64,
-    "lrD": 1e-4,
-    "lrG": 1e-4,
-    "beta1": 0.5,
-    "beta2": 0.9,
+    "lrD": hp.loguniform('lrD', -8, -1),
+    "lrG": hp.loguniform('lrG', -8, -1),
+    "beta1": hp.uniform('beta1', 0, 1),
+    "beta2": hp.uniform('beta2', 0, 1),
     "Diters": 5,
     "noBN": False,
-    "type": "dcgan",
+    "type": hp.choice('type', ["dcgan", "mlp", "resnet"]),
 }
 
 ray.init()
+
+algo = HyperOptSearch(space, max_concurrent=4, reward_attr="inception")
+
 sched = AsyncHyperBandScheduler(
     time_attr="training_iteration",
-    reward_attr="neg_mean_loss",
-    max_t=400,
-    grace_period=20)
-tune.register_trainable(
-    "train_mnist",
-    lambda cfg, rprtr: main(args.update(cfg), rprtr)
+    reward_attr="inception",
+    max_t=8,
+    grace_period=2
 )
+
+
+def train(config, reporter):
+    args.update(config)
+    main(args, reporter)
+
+
+tune.register_trainable(
+    "main",
+    train
+)
+
 tune.run_experiments(
     {
         "var_constraint": {
             "stop": {
-                "inception": 7,
-                "training_iteration": 10000
+                "inception": 6,
             },
             "trial_resources": {
                 "cpu": 16,
                 "gpu": 1
             },
             "run": "main",
-            "num_samples": 10,
-            "config": {
-                "lr": lambda spec: np.random.uniform(1e-7, 0.1),
-                "beta1": lambda spec: np.random.uniform(0, 0.9),
-            }
+            "num_samples": 100,
         }
     },
-    verbose=0,
-    scheduler=sched
+    verbose=True,
+    scheduler=sched,
+    search_alg=algo
 )

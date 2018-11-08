@@ -202,6 +202,22 @@ def check_or_download_inception(inception_path):
     return str(model_file)
 
 
+def check_or_download_stats(inception_path):
+    ''' Checks if the path to the inception file is valid, or downloads
+        the file if it is not present. '''
+    INCEPTION_URL = 'http://bioinf.jku.at/research/ttur/ttur_stats/fid_stats_cifar10_train.npz'
+    if inception_path is None:
+        inception_path = './'
+    inception_path = pathlib.Path(inception_path)
+    model_file = inception_path / 'fid_stats_cifar10_train.npz'
+    if not model_file.exists():
+        print("Downloading Inception model")
+        from urllib import request
+        fn, _ = request.urlretrieve(INCEPTION_URL, model_file)
+    return str(model_file)
+
+
+
 def _handle_path(path, sess):
     if path.endswith('.npz'):
         f = np.load(path)
@@ -216,13 +232,12 @@ def _handle_path(path, sess):
 
 
 def fid_score(images, dataset):
-    inception_path = './inception'
-    inception_path = check_or_download_inception(inception_path)
+    inception_path = check_or_download_inception(None)
 
     create_inception_graph(str(inception_path))
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
-        m1, s1 = _handle_path(f'fid_stats_{dataset}_train.npz', sess)
+        m1, s1 = _handle_path('/home/tbungert/Projects/WassersteinGAN/fid_stats_cifar10_train.npz', sess)
         m2, s2 = calculate_activation_statistics(images, sess)
         fid_value = calculate_frechet_distance(m1, s1, m2, s2)
         return fid_value
